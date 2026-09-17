@@ -77,6 +77,8 @@
 #include "misc/dispatch.h"
 #include "misc/language.h"
 #include "misc/node.h"
+#include "misc/json.h"
+#include "common/tags.h"
 #include "misc/thread_pool.h"
 #include "misc/thread_tools.h"
 
@@ -3857,6 +3859,150 @@ static int mp_property_packet_bitrate(void *ctx, struct m_property *prop,
     return m_property_int64_ro(action, arg, llrint(rate));
 }
 
+static void playback_info_add_property(MPContext *mpctx, mpv_node *dst,
+                               const char *key, const char *property)
+{
+    mpv_node value = {0};
+    if (mp_property_do(property, M_PROPERTY_GET_NODE, &value, mpctx) > 0) {
+        mpv_node *out = node_map_add(dst, key, MPV_FORMAT_NONE);
+        *out = value;
+        if (value.format == MPV_FORMAT_STRING)
+            talloc_steal(dst->u.list, value.u.string);
+        else if (value.format == MPV_FORMAT_NODE_ARRAY || value.format == MPV_FORMAT_NODE_MAP)
+            talloc_steal(dst->u.list, value.u.list);
+    }
+}
+
+static void playback_info_add_fragments(MPContext *mpctx, struct track *track,
+                                struct demux_reader_state *state, mpv_node *dst)
+{
+    if (!track->stream)
+        return;
+    const char *metadata = mp_tags_get_str(track->stream->tags, "fragment-index");
+    if (!metadata || strlen(metadata) > 1024 * 1024)
+        return;
+    void *tmp = talloc_new(NULL);
+    char *text = talloc_strdup(tmp, metadata);
+    mpv_node index = {0};
+    if (json_parse(tmp, &index, &text, 8) < 0)
+        goto done;
+    mpv_node *ranges = node_map_get(&index, "ranges");
+    mpv_node *complete = node_map_get(&index, "complete");
+    if (!ranges || ranges->format != MPV_FORMAT_NODE_ARRAY || !ranges->u.list->num)
+        goto done;
+    mpv_node *first = &ranges->u.list->values[0];
+    if (first->format != MPV_FORMAT_NODE_ARRAY || first->u.list->num != 2 ||
+        first->u.list->values[0].format != MPV_FORMAT_INT64)
+        goto done;
+    bool from_start = first->u.list->values[0].u.int64 / 1e6 <=
+                      track->demuxer->start_time + 0.001;
+    bool full = complete && complete->format == MPV_FORMAT_FLAG && complete->u.flag;
+    if (full)
+        node_map_add_int64(dst, "fragmentCount", ranges->u.list->num);
+    if (!mpctx->restart_complete || mpctx->playback_pts == MP_NOPTS_VALUE)
+        goto done;
+    double now = mpctx->playback_pts * mpctx->play_dir - state->timestamp_offset;
+    for (int i = 0; i < ranges->u.list->num; i++) {
+        mpv_node *range = &ranges->u.list->values[i];
+        if (range->format != MPV_FORMAT_NODE_ARRAY || range->u.list->num != 2)
+            goto done;
+        mpv_node *values = range->u.list->values;
+        if (values[0].format != MPV_FORMAT_INT64 || values[1].format != MPV_FORMAT_INT64)
+            goto done;
+        double start = values[0].u.int64 / 1e6;
+        double end = values[1].u.int64 / 1e6;
+        if (!full && !from_start)
+            goto done;
+        if (now >= start && (now < end || (full && i == ranges->u.list->num - 1 && now <= end + 0.001))) {
+            node_map_add_int64(dst, "fragmentIndex", i + 1);
+            break;
+        }
+    }
+done:
+    talloc_free(tmp);
+}
+
+static int mp_property_playback_info(void *ctx, struct m_property *prop,
+                                         int action, void *arg)
+{
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_STRING};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    MPContext *mpctx = ctx;
+    if (!mpctx->demuxer || !mpctx->playing)
+        return M_PROPERTY_UNAVAILABLE;
+    mpv_node root;
+    node_init(&root, MPV_FORMAT_NODE_MAP, NULL);
+    node_map_add_int64(&root, "entryId", mpctx->playing->id);
+    const char *names[] = {"video", "audio"};
+    const int types[] = {STREAM_VIDEO, STREAM_AUDIO};
+    struct demuxer *seen = NULL;
+    uint64_t total = 0;
+    bool total_valid = true;
+    bool any = false;
+    for (int i = 0; i < 2; i++) {
+        struct track *track = mpctx->current_track[0][types[i]];
+        if (!track || !track->demuxer)
+            continue;
+        any = true;
+        mpv_node *item = node_map_add(&root, names[i], MPV_FORMAT_NODE_MAP);
+        const char *fields[] = {"codec", "decoder", "decoder-desc"};
+        const char *keys[] = {"codec", "decoder", "decoderDescription"};
+        for (int n = 0; n < 3; n++)
+            playback_info_add_property(mpctx, item, keys[n],
+                mp_tprintf(100, "current-tracks/%s/%s", names[i], fields[n]));
+        playback_info_add_property(mpctx, item, "playbackBitrateBps",
+                           i ? "audio-bitrate" : "video-bitrate");
+        struct demux_reader_state state;
+        demux_get_reader_state(track->demuxer, &state);
+        if (state.input_rate_valid && state.bytes_per_second <= INT64_MAX) {
+            node_map_add_int64(item, "downloadBytesPerSecond", state.bytes_per_second);
+            if (track->demuxer != seen) {
+                if (state.bytes_per_second > INT64_MAX - total)
+                    total_valid = false;
+                else
+                    total += state.bytes_per_second;
+            }
+        } else {
+            total_valid = false;
+        }
+        seen = track->demuxer;
+        playback_info_add_fragments(mpctx, track, &state, item);
+        if (i == 0) {
+            playback_info_add_property(mpctx, item, "width", "video-params/w");
+            playback_info_add_property(mpctx, item, "height", "video-params/h");
+            playback_info_add_property(mpctx, item, "fps", "container-fps");
+        } else {
+            playback_info_add_property(mpctx, item, "sampleRateHz", "audio-params/samplerate");
+            playback_info_add_property(mpctx, item, "channelLayout", "audio-params/channels");
+            playback_info_add_property(mpctx, item, "outputChannelLayout", "audio-out-params/channels");
+            playback_info_add_property(mpctx, item, "outputChannelCount", "audio-out-params/channel-count");
+            if (mpctx->ao && mpctx->ao_chain && !mpctx->ao_chain->filter->ao_needs_update)
+                node_map_add_flag(item, "channelsMerged",
+                    mp_output_chain_mono_downmix_active(mpctx->ao_chain->filter));
+            playback_info_add_property(mpctx, item, "sampleFormat", "audio-params/format");
+        }
+    }
+    if (any && total_valid)
+        node_map_add_int64(&root, "downloadBytesPerSecond", total);
+    playback_info_add_property(mpctx, &root, "hardwareDecoder", "hwdec-current");
+    playback_info_add_property(mpctx, &root, "hardwareInterop", "hwdec-interop");
+    playback_info_add_property(mpctx, &root, "videoOutput", "current-vo");
+    playback_info_add_property(mpctx, &root, "audioOutput", "current-ao");
+    char *json = NULL;
+    int result = json_write(&json, &root);
+    talloc_free(root.u.list);
+    if (result < 0) {
+        talloc_free(json);
+        return M_PROPERTY_ERROR;
+    }
+    *(char **)arg = json;
+    return M_PROPERTY_OK;
+}
+
 static int mp_property_cwd(void *ctx, struct m_property *prop,
                            int action, void *arg)
 {
@@ -4696,6 +4842,7 @@ static const struct m_property mp_properties_base[] = {
     {"eof-reached", mp_property_eof_reached},
     {"seeking", mp_property_seeking},
     {"playback-abort", mp_property_playback_abort},
+    {"playback-info", mp_property_playback_info},
     {"cache-speed", mp_property_cache_speed},
     {"demuxer-cache-duration", mp_property_demuxer_cache_duration},
     {"demuxer-cache-time", mp_property_demuxer_cache_time},

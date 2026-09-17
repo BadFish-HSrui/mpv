@@ -73,6 +73,7 @@ struct mp_user_filter {
     struct mp_aframe *last_in_aformat;
 
     bool last_is_active;
+    bool mono_output;
 
     int64_t last_in_pts, last_out_pts;
 
@@ -212,6 +213,13 @@ static void user_wrapper_process(struct mp_filter *f)
     if (mp_pin_can_transfer_data(f->ppins[1], u->f->pins[1])) {
         struct mp_frame frame = mp_pin_out_read(u->f->pins[1]);
 
+        if (frame.type == MP_FRAME_AUDIO && u->label && !strcmp(u->label, "mono-downmix")) {
+            struct mp_chmap channels;
+            mp_aframe_get_chmap(frame.data, &channels);
+            struct mp_chmap mono = MP_CHMAP_INIT_MONO;
+            u->mono_output = mp_chmap_equals(&channels, &mono);
+        }
+
         double pts = mp_frame_get_pts(frame);
         if (pts != MP_NOPTS_VALUE)
             u->last_out_pts = pts;
@@ -233,6 +241,7 @@ static void user_wrapper_reset(struct mp_filter *f)
 
     u->error_eof_sent = false;
     u->in_eof = false;
+    u->mono_output = false;
     u->last_in_pts = u->last_out_pts = MP_NOPTS_VALUE;
 }
 
@@ -498,6 +507,12 @@ static struct mp_user_filter *find_by_label(struct chain *p, const char *label)
             return u;
     }
     return NULL;
+}
+
+bool mp_output_chain_mono_downmix_active(struct mp_output_chain *c)
+{
+    struct mp_user_filter *u = find_by_label(c->f->priv, "mono-downmix");
+    return u && !u->failed && !mp_filter_has_failed(u->f) && u->mono_output;
 }
 
 bool mp_output_chain_command(struct mp_output_chain *c, const char *target,

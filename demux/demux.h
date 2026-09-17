@@ -55,6 +55,8 @@ struct demux_reader_state {
     uint64_t byte_level_seeks; // number of byte stream level seeks
     double ts_last; // approx. timestamp of demuxer position
     uint64_t bytes_per_second; // low level statistics
+    bool input_rate_valid;
+    double timestamp_offset;
     // Positions that can be seeked to without incurring the latency of a low
     // level seek.
     int num_seek_ranges;
