@@ -28,12 +28,19 @@ struct priv {
     EGLDisplay egl_display;
     EGLContext egl_context;
     EGLSurface egl_surface;
+    int width, height;
+    bool redraw_pending;
 };
 
 static void android_swap_buffers(struct ra_ctx *ctx)
 {
     struct priv *p = ctx->priv;
-    eglSwapBuffers(p->egl_display, p->egl_surface);
+    if (eglSwapBuffers(p->egl_display, p->egl_surface) && p->redraw_pending) {
+        // Android may acquire the resized back buffer only during this swap.
+        // Redraw the retained frame once, including when playback is paused.
+        p->redraw_pending = false;
+        ctx->vo->want_redraw = true;
+    }
 }
 
 static void android_uninit(struct ra_ctx *ctx)
@@ -105,6 +112,7 @@ fail:
 
 static bool android_reconfig(struct ra_ctx *ctx)
 {
+    struct priv *p = ctx->priv;
     int w, h;
     if (!vo_android_surface_size(ctx->vo, &w, &h))
         return false;
@@ -114,6 +122,12 @@ static bool android_reconfig(struct ra_ctx *ctx)
     if (native_window) {
         int32_t current_format = ANativeWindow_getFormat(native_window);
         ANativeWindow_setBuffersGeometry(native_window, w, h, current_format);
+    }
+
+    if (w != p->width || h != p->height) {
+        p->width = w;
+        p->height = h;
+        p->redraw_pending = true;
     }
 
     ctx->vo->dwidth = w;
