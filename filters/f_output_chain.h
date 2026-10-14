@@ -61,6 +61,8 @@ void mp_output_chain_set_vo(struct mp_output_chain *p, struct vo *vo);
 struct ao;
 void mp_output_chain_set_ao(struct mp_output_chain *p, struct ao *ao);
 
+bool mp_output_chain_mono_downmix_active(struct mp_output_chain *p);
+
 // Send a command to the filter with the target label.
 bool mp_output_chain_command(struct mp_output_chain *p, const char *target,
                              struct mp_filter_command *cmd);

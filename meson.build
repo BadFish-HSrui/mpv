@@ -1384,7 +1384,6 @@ endif
 
 if features['d3d11'] or features['egl-angle-win32'] or (features['vulkan'] and win32)
     sources += files('video/out/gpu/d3d11_helpers.c')
-    features += {'dxgi-debug-d3d11': cc.has_header_symbol('d3d11sdklayers.h', 'DXGI_DEBUG_D3D11')}
 endif
 
 # hwaccel
@@ -1433,6 +1432,11 @@ features += {'d3d-hwaccel': d3d_hwaccel.allowed()}
 if features['d3d-hwaccel']
     sources += files('video/d3d.c',
                      'video/filter/vf_d3d11vpp.c')
+    # vf_d3d11vpp.c uses the DXGI colour space helpers from d3d11_helpers.c, which the
+    # condition above only pulls in for the d3d11 features.
+    if not features['d3d11'] and not features['egl-angle-win32'] and not (features['vulkan'] and win32)
+        sources += files('video/out/gpu/d3d11_helpers.c')
+    endif
 endif
 
 amf = cc.has_header('AMF/core/Factory.h', required:

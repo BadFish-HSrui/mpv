@@ -111,19 +111,8 @@ static bool init_audiounit(struct ao *ao)
     AVAudioSession *instance = AVAudioSession.sharedInstance;
     AVAudioSessionPortDescription *port = nil;
     NSInteger maxChannels = instance.maximumOutputNumberOfChannels;
-    NSInteger prefChannels = MIN(maxChannels, ao->channels.num);
 
     MP_VERBOSE(ao, "max channels: %ld, requested: %d\n", maxChannels, (int)ao->channels.num);
-
-    AVAudioSessionCategoryOptions options = 0;
-    if (!(ao->init_flags & AO_INIT_EXCLUSIVE)) {
-        options |= AVAudioSessionCategoryOptionMixWithOthers;
-    }
-
-    [instance setCategory:AVAudioSessionCategoryPlayback withOptions:options error:nil];
-    [instance setMode:AVAudioSessionModeMoviePlayback error:nil];
-    [instance setActive:YES error:nil];
-    [instance setPreferredOutputNumberOfChannels:prefChannels error:nil];
 
     AudioComponentDescription desc = (AudioComponentDescription) {
         .componentType         = kAudioUnitType_Output,
@@ -235,10 +224,6 @@ static void uninit(struct ao *ao)
     AudioUnitUninitialize(p->audio_unit);
     AudioComponentInstanceDispose(p->audio_unit);
 
-    [AVAudioSession.sharedInstance
-        setActive:NO
-        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-        error:nil];
 }
 
 static int init(struct ao *ao)

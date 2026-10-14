@@ -15,6 +15,8 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "config.h"
+#if HAVE_SWIFT
 #include "clipboard.h"
 #include "osdep/mac/swift.h"
 
@@ -57,3 +59,5 @@ const struct clipboard_backend clipboard_backend_mac = {
     .get_data = get_data,
     .set_data = set_data,
 };
+
+#endif

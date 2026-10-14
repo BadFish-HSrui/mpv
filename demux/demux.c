@@ -4816,6 +4816,7 @@ void demux_get_reader_state(struct demuxer *demuxer, struct demux_reader_state *
         .low_level_seeks = in->low_level_seeks,
         .ts_last = in->demux_ts,
         .bytes_per_second = in->bytes_per_second,
+        .timestamp_offset = in->ts_offset,
         .byte_level_seeks = in->byte_level_seeks,
         .file_cache_bytes = in->cache ? demux_cache_get_size(in->cache) : -1,
     };
